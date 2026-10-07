@@ -16,9 +16,9 @@ Vault APIは **MCP**（Model Context Protocol）の接続口 `https://<ドメイ
 | Claude Code | ○ | — | — | MCP（APIキー または OAuth） |
 | Codex | ○ | — | — | MCP または curl（APIキー） |
 
-**壁打ちの中心はChatGPTです。** PCのブラウザ版ChatGPTの普通のチャットで使えます。iPhoneの普通のチャットから使いたい場合は、現状ではClaudeを使うことになります（同じサーバーにそのまま接続できます）。
+**Vaultを使う壁打ちは、Claudeを主に使います。** iPhoneでもPCでも、普通のチャットから検索・閲覧・保存がすべてできます。
 
-ChatGPTのDeep ResearchやCompany knowledgeでも使えるよう、決まった名前の `search` と `fetch` ツールも用意しています。
+ChatGPT（PCのブラウザ版）からも同じサーバーに接続できます。ChatGPTのDeep ResearchやCompany knowledgeでも使えるよう、決まった名前の `search` と `fetch` ツールも用意しています。
 
 ## 前提
 
@@ -36,7 +36,9 @@ ChatGPTのDeep ResearchやCompany knowledgeでも使えるよう、決まった�
 
 パスワードを15分間に10回間違えると、一時的にロックされます。
 
-## Claude
+## Claude（メイン）
+
+ChatGPTで話した内容はClaudeに引き継げません。Vaultを使う話は、最初からClaudeで始めてください。
 
 ### 登録（PCのブラウザで1回だけ）
 
