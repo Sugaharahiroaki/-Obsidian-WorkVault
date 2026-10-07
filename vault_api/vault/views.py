@@ -55,6 +55,8 @@ def api_endpoint(action, *, scope, method):
                 return _error(403, "forbidden", "This API key may not perform this action.")
             return view(request, key)
 
+        # Host projects using LoginRequiredMiddleware must not redirect API calls to a login page.
+        wrapper.login_required = False
         return wrapper
 
     return decorator
