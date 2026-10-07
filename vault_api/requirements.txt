@@ -1,0 +1,5 @@
+Django>=5.2,<6.0
+python-dotenv>=1.0
+gunicorn>=23.0; sys_platform != "win32"
+# Only when VAULT_DB_ENGINE=postgresql:
+# psycopg[binary]>=3.2

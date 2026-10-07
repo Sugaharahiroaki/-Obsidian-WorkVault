@@ -1,0 +1,22 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets — never commit (.env.example files are fine)
+.env
+*.key
+*.pem
+*.crt
+*.pfx
+
+# Local databases (contain the whole vault in plain text)
+*.sqlite3
+*.sqlite3-*
+db.sqlite3*
+
+# Client runtime files
+*.log
+state*.json
+*.lock
