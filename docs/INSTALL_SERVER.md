@@ -1,207 +1,134 @@
 # サーバー（Vault API）のセットアップ
 
-前提:
+新しく借りるVPS（さくらのVPS 2G、Ubuntu 24.04 を想定）へのデプロイ手順です。HPやサンプルアプリを同じサーバーに置いても干渉しないよう、Vault APIは専用ユーザー・専用サービス・専用のnginxサイトで動かします。
 
-- Linux VPS、Python 3.10以上（Django 5.2 LTS）
-- SQLite 3.34以上（FTS5 trigramを使うため。それ未満やPostgreSQLではLIKE検索だけになる）
-- TLS証明書（Let's Encryptなど）
+## 0. 準備するもの
 
-確認方法:
+- VPS（Ubuntu 22.04 / 24.04）とSSHでログインできる管理ユーザー（sudo可）
+- Vault API用のドメイン（例: `vault.example.com`）
+  - DNSの **Aレコード** をVPSのIPアドレスに向けておく
+- さくらのVPSの **パケットフィルタ** で、80番（HTTP）と443番（HTTPS）を許可しておく（コントロールパネルで設定）
+- Let's Encryptの通知を受け取るメールアドレス
 
-```bash
-python3 -c "import sqlite3; print(sqlite3.sqlite_version)"
-```
+## 1. コードを置く（非公開リポジトリ）
 
-方式は2つあります。
-
-- **A. 単独のプロジェクトとして動かす**（推奨。既存システムに影響しない）
-- **B. 既存のDjangoプロジェクトに `vault` アプリを組み込む**
-
----
-
-## A. 単独デプロイ
-
-### 1. 配置
+VPSで、管理ユーザーとしてGitHub用のデプロイキーを作ります。
 
 ```bash
-sudo useradd --system --home /opt/obsidian-vault-bridge vaultapi
-sudo mkdir -p /opt/obsidian-vault-bridge /var/lib/vault_api
-sudo chown vaultapi:vaultapi /opt/obsidian-vault-bridge /var/lib/vault_api
-sudo chmod 700 /var/lib/vault_api
-
-sudo -u vaultapi git clone <このリポジトリ> /opt/obsidian-vault-bridge
-cd /opt/obsidian-vault-bridge
-sudo -u vaultapi python3 -m venv .venv
-sudo -u vaultapi .venv/bin/pip install -r vault_api/requirements.txt
+ssh-keygen -t ed25519 -f ~/.ssh/github_vault -N ""
+cat ~/.ssh/github_vault.pub
 ```
 
-### 2. 設定（`vault_api/.env`）
+表示された公開鍵を、GitHubのリポジトリの **Settings → Deploy keys → Add deploy key** に登録します。「Allow write access」はオフのままにします。
 
 ```bash
-sudo -u vaultapi cp vault_api/.env.example vault_api/.env
-sudo chmod 600 vault_api/.env
-python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # 必要な数だけ生成
+cat >> ~/.ssh/config <<'EOF'
+Host github-vault
+    HostName github.com
+    IdentityFile ~/.ssh/github_vault
+EOF
+sudo mkdir -p /opt/obsidian-vault-bridge
+sudo chown "$USER": /opt/obsidian-vault-bridge
+git clone git@github-vault:Sugaharahiroaki/-Obsidian-WorkVault.git /opt/obsidian-vault-bridge
 ```
 
-| 変数 | 例 |
+## 2. セットアップスクリプトを実行する
+
+```bash
+sudo bash /opt/obsidian-vault-bridge/deploy/setup_server.sh vault.example.com you@example.com
+```
+
+スクリプトが行うこと:
+
+1. パッケージを入れる（python3-venv、nginx、certbot、sqlite3）
+2. 専用ユーザー `vaultapi` と、データ置き場 `/var/lib/vault_api`（権限700）を作る
+3. venvを作り、依存パッケージを入れる
+4. `vault_api/.env` を作る（秘密鍵とAPIキーはランダムに生成。既にあれば上書きしない）
+5. **Owner password を聞く**。ChatGPTやClaudeを接続するときに入力するパスワードです（12文字以上）。ハッシュだけを `.env` に保存します
+6. DBを作る（migrate）
+7. systemdサービス `vault-api`（gunicorn、127.0.0.1:8100、メモリ上限400MB）を起動する
+8. nginxサイト `vault-api` を追加し、Let's EncryptでHTTPSにする（HTTPからHTTPSへの転送も設定）
+
+最後に、MCPのURLとAPIキーの確認方法が表示されます。
+
+```bash
+sudo grep -E '^VAULT_(SYNC|WRITE|READ)_KEYS' /opt/obsidian-vault-bridge/vault_api/.env
+```
+
+| キー | 渡す先 |
 |---|---|
-| `DJANGO_SECRET_KEY` | 生成した値 |
-| `DJANGO_ALLOWED_HOSTS` | `vault.example.com` |
-| `VAULT_DB_PATH` | `/var/lib/vault_api/db.sqlite3` |
-| `VAULT_SYNC_KEYS` | `windows-pc:<生成した値>` |
-| `VAULT_READ_KEYS` | `chatgpt:<生成した値>,codex:<生成した値>` |
-| `VAULT_REQUIRE_HTTPS` | `true` |
-| `VAULT_SECURE_PROXY_SSL_HEADER` | `true`（nginxがTLSを終端する場合） |
-| `VAULT_TRUSTED_PROXY_COUNT` | `1`（nginx 1段の場合） |
-| `DJANGO_SECURE_HSTS_SECONDS` | 動作確認後に `31536000` |
+| `windows-pc:` の後ろ | PCの `windows_client/.env` の `VAULT_API_KEY` |
+| `codex:` の後ろ | Codex / Claude Code（読み取り専用） |
 
-キーの形式が不正だと（32文字未満、`name:` がないなど）起動時にエラーになります。エラーメッセージにキーの値は出ません。
-
-### 3. DB作成と確認
+## 3. 動作確認
 
 ```bash
-cd /opt/obsidian-vault-bridge/vault_api
-sudo -u vaultapi ../.venv/bin/python manage.py migrate
-sudo -u vaultapi ../.venv/bin/python manage.py check --deploy
-sudo chmod 600 /var/lib/vault_api/db.sqlite3*
+curl -s -o /dev/null -w "%{http_code}\n" https://vault.example.com/api/vault/recent/       # 401
+curl -s https://vault.example.com/.well-known/oauth-protected-resource                        # JSON
+sudo systemctl status vault-api
 ```
 
-FTSが作られたかの確認（`vault_note_fts` と表示されればOK）:
+続けて、PC側（[INSTALL_WINDOWS.md](INSTALL_WINDOWS.md)）とAIとの接続（[CONNECT_AI.md](CONNECT_AI.md)）を設定します。
+
+## 更新
 
 ```bash
-sudo -u vaultapi sqlite3 /var/lib/vault_api/db.sqlite3 "select name from sqlite_master where name='vault_note_fts';"
+sudo bash /opt/obsidian-vault-bridge/deploy/update.sh
 ```
 
-### 4. gunicorn（systemd）
+git pull、pip、migrate、check、再起動をまとめて行います。
 
-`/etc/systemd/system/vault-api.service`:
+## 設定（`vault_api/.env`）
 
-```ini
-[Unit]
-Description=Obsidian Vault API
-After=network.target
+| 変数 | 説明 |
+|---|---|
+| `DJANGO_SECRET_KEY` / `DJANGO_ALLOWED_HOSTS` | Djangoの基本設定 |
+| `VAULT_PUBLIC_URL` | `https://<ドメイン>`。OAuthの発行者とMCPのURLの基準になるので、本番では必須 |
+| `VAULT_DB_PATH` | SQLiteのファイル（`/var/lib/vault_api/db.sqlite3`） |
+| `VAULT_SYNC_KEYS` / `VAULT_WRITE_KEYS` / `VAULT_READ_KEYS` | 固定のAPIキー（`名前:キー` をカンマ区切り） |
+| `VAULT_OWNER_PASSWORD_HASH` | 許可画面のパスワードのハッシュ（`manage.py vault_owner_password` で作る） |
+| `VAULT_OAUTH_REDIRECT_HOSTS` | OAuthの戻り先として許可するホスト（既定は `chatgpt.com,claude.ai`） |
+| `VAULT_REQUIRE_HTTPS` / `VAULT_SECURE_PROXY_SSL_HEADER` / `VAULT_TRUSTED_PROXY_COUNT` | HTTPS関連。nginxの後ろなら `true` / `true` / `1` |
+| `DJANGO_SECURE_HSTS_SECONDS` | 動作確認後に `31536000` にするとHSTSが有効になる |
 
-[Service]
-User=vaultapi
-Group=vaultapi
-WorkingDirectory=/opt/obsidian-vault-bridge/vault_api
-# Access log without query strings (search words / note paths stay out of logs)
-ExecStart=/opt/obsidian-vault-bridge/.venv/bin/gunicorn config.wsgi:application \
-    --bind 127.0.0.1:8100 --workers 2 \
-    --access-logfile - --access-logformat '%%(h)s %%(t)s "%%(m)s %%(U)s" %%(s)s %%(b)s'
-Restart=on-failure
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/vault_api
+`.env` を変えたら `sudo systemctl restart vault-api` で再起動します。
 
-[Install]
-WantedBy=multi-user.target
-```
+## 同じVPSに他のサイトを置くとき
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now vault-api
-```
+- nginxは、サイトごとに `/etc/nginx/sites-available/` に別ファイルを作り、`server_name` で分ける。Vault APIのファイル（`vault-api`）は編集しない
+- アプリごとに別のLinuxユーザーとsystemdサービスにする。`/var/lib/vault_api` は `vaultapi` 以外が読めない
+- ポートは重ならないようにする（Vault APIは127.0.0.1:8100）
 
-`.env` は `settings.py` が読み込むので、`EnvironmentFile` は不要です。
+## 既存のDjangoプロジェクトに組み込む場合
 
-### 5. nginx（TLS終端、レート制限、クエリを含まないログ）
-
-```nginx
-limit_req_zone $binary_remote_addr zone=vault_api:10m rate=10r/s;
-log_format vault_noquery '$remote_addr [$time_local] "$request_method $uri" $status $body_bytes_sent';
-
-server {
-    listen 80;
-    server_name vault.example.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name vault.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/vault.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/vault.example.com/privkey.pem;
-
-    client_max_body_size 10m;            # >= VAULT_MAX_REQUEST_BYTES
-    access_log /var/log/nginx/vault_api.log vault_noquery;
-
-    location /api/vault/ {
-        limit_req zone=vault_api burst=50 nodelay;
-        proxy_pass http://127.0.0.1:8100;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location / { return 404; }
-}
-```
-
-既存のnginxにサーバーブロックを追加する場合は、既存の設定を壊さないよう別ファイル（`/etc/nginx/sites-available/vault-api`）にして `nginx -t` で確認してから再読み込みしてください。
-
-### 6. 動作確認
-
-```bash
-curl -s -H "Authorization: Bearer <readキー>" https://vault.example.com/api/vault/recent/
-# => {"count": 0, "results": []}
-curl -s https://vault.example.com/api/vault/recent/
-# => 401
-```
-
----
-
-## B. 既存の Django プロジェクトに組み込む
-
-1. `vault_api/vault/` を既存プロジェクトにコピーする
-2. `settings.py` に追記する
-
-   ```python
-   INSTALLED_APPS += ["vault"]
-
-   VAULT_SYNC_KEYS = os.environ.get("VAULT_SYNC_KEYS", "")
-   VAULT_READ_KEYS = os.environ.get("VAULT_READ_KEYS", "")
-   VAULT_REQUIRE_HTTPS = True
-   VAULT_TRUSTED_PROXY_COUNT = 1
-   VAULT_MAX_NOTE_BYTES = 2 * 1024 * 1024
-   VAULT_MAX_BATCH_NOTES = 100
-   ```
-
-3. `urls.py` に追記する
+1. `vault_api/vault/` をプロジェクトにコピーし、`INSTALLED_APPS` に `"vault"` を追加する
+2. `urls.py` に次の2行を追加する
 
    ```python
    path("api/vault/", include("vault.urls")),
+   path("", include("vault.oauth_urls")),   # OAuthの .well-known はサイトのルートに必要
    ```
 
-4. `python manage.py migrate vault`
+3. `config/settings.py` の「Vault API」と「OAuth for MCP clients」の設定ブロックをコピーし、`python manage.py migrate vault` を実行する
 
 注意点:
 
-- 既存プロジェクトの `DATA_UPLOAD_MAX_MEMORY_SIZE` が既定（2.5MB）のままなら、クライアントの `VAULT_BATCH_MAX_BYTES` をそれより小さく（例: `2000000`）する
-- 既存DBがPostgreSQLの場合、FTSは作られずILIKE検索になる（機能は同じで、件数が多いと遅くなる）
-- `LoginRequiredMiddleware` を使っていても、APIビューはログイン不要として扱われる（`login_required = False`）
-- APIビューは `csrf_exempt` なので、既存のCSRF設定には影響しない
-- `vault` 以外のアプリやテーブルには触れない（テーブル名はすべて `vault_` で始まる）
-
----
+- `DATA_UPLOAD_MAX_MEMORY_SIZE` が既定（2.5MB）なら、PCの `VAULT_BATCH_MAX_BYTES` を小さく（例: `2000000`）する
+- PostgreSQLではFTSを使わず、ILIKE検索になる
+- APIビューは `csrf_exempt` と `login_required = False` を付けているので、既存のCSRF設定や `LoginRequiredMiddleware` の影響を受けない
+- テーブル名はすべて `vault_` で始まり、他のアプリには触れない
 
 ## バックアップ
 
-SQLiteはWALモードなので、ファイルをコピーせずに `.backup` を使います。
-
 ```bash
-sqlite3 /var/lib/vault_api/db.sqlite3 ".backup '/var/backups/vault_api-$(date +%F).sqlite3'"
-chmod 600 /var/backups/vault_api-*.sqlite3
+sudo -u vaultapi sqlite3 /var/lib/vault_api/db.sqlite3 ".backup '/var/lib/vault_api/backup-$(date +%F).sqlite3'"
 ```
 
-Vaultの本文が平文で入っているので、バックアップの保管先の権限にも注意してください。サーバー側のデータは、PCから `sync.py --once --force` を実行すればいつでも作り直せます。
+Vaultの本文が平文で入っているので、バックアップの保管先の権限にも注意してください。サーバーのデータは、PCで `sync.py --once --force` を実行すれば作り直せます。ただし、PCに未反映のAIの書き込み（反映待ち）は、サーバーにしかありません。
 
-## テスト
+## テスト（開発PC）
 
 ```bash
 cd vault_api
-../.venv/bin/python manage.py test vault --settings=config.test_settings
+../.venv/Scripts/python manage.py test vault --settings=config.test_settings
 ```

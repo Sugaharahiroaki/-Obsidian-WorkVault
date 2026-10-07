@@ -1,0 +1,26 @@
+[Unit]
+Description=Obsidian Vault API (gunicorn)
+After=network.target
+
+[Service]
+User=vaultapi
+Group=vaultapi
+WorkingDirectory=__APP_DIR__/vault_api
+# The code is read-only for this user; do not try to write __pycache__ next to it.
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Access log without query strings, so search words and note paths stay out of logs.
+ExecStart=__APP_DIR__/.venv/bin/gunicorn config.wsgi:application \
+    --bind 127.0.0.1:__PORT__ --workers 2 --timeout 60 \
+    --access-logfile - --access-logformat '%%(h)s %%(t)s "%%(m)s %%(U)s" %%(s)s %%(b)s'
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__DATA_DIR__
+UMask=0077
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

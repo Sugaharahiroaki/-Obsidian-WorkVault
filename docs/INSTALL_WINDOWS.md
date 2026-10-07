@@ -26,6 +26,8 @@ notepad windows_client\.env
 | `VAULT_API_KEY` | サーバーの `VAULT_SYNC_KEYS` にある `windows-pc:` の後ろの値 |
 | `VAULT_EXTRA_EXCLUDES` | 追加で送らないパス（カンマ区切り。`*` は `/` もまたぐ）。例: `04_AI-Chats/Claude_Export_*` |
 | `VAULT_SECRET_SCAN_ALLOW` | 秘密情報スキャンの誤検知を許可するパス |
+| `VAULT_APPLY_REMOTE_CHANGES` | AI（Claude / ChatGPT）が保存したノートをVaultに反映するか（既定 `true`）。`false` にするとVaultへは一切書き込まない |
+| `VAULT_PULL_INTERVAL_SECONDS` | AIの保存をサーバーに確認しに行く間隔（既定30秒） |
 
 `.env` は **Vaultの外**（このリポジトリ内）に置いてください。Git管理外です。
 
@@ -81,7 +83,20 @@ Register-ScheduledTask -TaskName "ObsidianVaultSync" -Action $action -Trigger $t
 - 変更を検知してから2.5秒間変更がなければ送信します（Obsidianの自動保存で何度も送らないため）
 - 内容のsha256が前回と同じなら送りません
 - 10分ごとにフルスキャンし、取りこぼしたイベントを補います。送信に失敗した場合は60秒後に再試行します
-- **削除・リネームはサーバーに反映されません**（Phase 1の仕様）
+- **削除・リネームはサーバーに反映されません**
+
+AIが保存したノートの反映（Phase 3）:
+
+- 30秒ごとにサーバーの「反映待ち」を確認し、Vaultに書き込みます
+- 書き込めるのは `00_INBOX/`、`01_Projects/` 〜 `07_DevLogs/` の中だけです。それ以外への書き込み依頼は拒否してログに残します
+- 次の場合は元のファイルを変更せず、同じフォルダに `<名前> (conflict YYYY-MM-DD HHMMSS).md` を作ります
+  - PCで編集したばかりのノートをAIが更新しようとした
+  - 新規作成しようとした名前のファイルが既にあった
+- Vaultのファイルを削除することはありません
+- ログ例
+  - `Applied AI create: 04_AI-Chats/...`（反映した）
+  - `Conflict on ...: AI text saved as ...`（競合ファイルに保存した）
+  - `Refused AI create on 99_Archive/... (not_writable)`（拒否した）
 
 ## ファイルの場所
 
@@ -89,6 +104,7 @@ Register-ScheduledTask -TaskName "ObsidianVaultSync" -Action $action -Trigger $t
 |---|---|
 | ログ | `%LOCALAPPDATA%\obsidian-vault-bridge\sync.log`（1MB×4世代でローテーション） |
 | 状態 | `%LOCALAPPDATA%\obsidian-vault-bridge\state.json`（パスごとのhash、mtime、サイズ。本文は含まない） |
+| 反映済みのAIの書き込み | `%LOCALAPPDATA%\obsidian-vault-bridge\applied_changes.json`（二重反映を防ぐための記録。消さないこと） |
 
 状態ファイルを削除すると、次回は全ノートを再評価します。サーバー側は内容が同じなら `unchanged` になるだけなので、害はありません。
 
