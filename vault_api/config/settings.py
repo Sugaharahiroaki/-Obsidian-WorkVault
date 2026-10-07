@@ -117,6 +117,8 @@ VAULT_READ_KEYS = os.environ.get("VAULT_READ_KEYS", "")
 # MCP resource identifier, and in the OpenAPI schema. Empty = derive from the
 # request (fine for local testing; set it in production).
 VAULT_PUBLIC_URL = os.environ.get("VAULT_PUBLIC_URL", "").rstrip("/")
+# Obsidian vault name, used for obsidian:// citation links in MCP search results.
+VAULT_OBSIDIAN_VAULT_NAME = os.environ.get("VAULT_OBSIDIAN_VAULT_NAME", "WorkVault")
 
 # --- OAuth for MCP clients (ChatGPT / Claude apps) ------------------------
 # Hash of the owner's password, entered on the consent screen when ChatGPT or

@@ -9,6 +9,7 @@ oauth.py) or a static API key from .env (Claude Code / Codex with a header).
 """
 import json
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
@@ -22,6 +23,7 @@ PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_INFO = {"name": "obsidian-workvault", "title": "Obsidian WorkVault", "version": "1.0.0"}
 MCP_DEFAULT_MAX_CHARS = 20000
 LIST_LIMIT = 500
+FETCH_MAX_CHARS = 100_000
 
 INSTRUCTIONS = f"""This server gives access to the user's Obsidian vault "WorkVault" (Japanese notes).
 Folders: 00_INBOX (quick memos), 01_Projects/<project>/ with project.md (overview), requirements.md
@@ -148,6 +150,26 @@ TOOLS = [
         ),
         {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
         auth.SCOPE_WRITE,
+    ),
+]
+# ChatGPT deep research / company knowledge expect exactly these two read-only
+# tools ("company knowledge compatibility" schema of OpenAI's MCP docs).
+TOOLS += [
+    Tool(
+        "search",
+        "Search vault (compatibility)",
+        "Search the Obsidian vault. Returns note ids (paths) with titles; use fetch to read one.",
+        _schema({"query": {"type": "string"}}, ["query"]),
+        READ_ONLY,
+        auth.SCOPE_READ,
+    ),
+    Tool(
+        "fetch",
+        "Fetch note (compatibility)",
+        "Fetch the full text of a note by the id returned from search.",
+        _schema({"id": {"type": "string", "description": "Note path returned by search"}}, ["id"]),
+        READ_ONLY,
+        auth.SCOPE_READ,
     ),
 ]
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
@@ -285,6 +307,8 @@ def _tool_error(message):
 def _detail(name, result):
     if name == "search_notes":
         return f"mode={result['mode']} hits={result['count']}"  # never the query itself
+    if name == "search":
+        return f"hits={len(result['results'])}"
     if "change_id" in result:
         return f"{result['status']} change={result['change_id']}"
     if "count" in result:
@@ -302,6 +326,35 @@ def _recent(args, client):
     return {"count": len(recent), "results": recent}
 
 
+def _obsidian_url(path):
+    """Citation link that opens the note in the Obsidian app (PC or iPhone)."""
+    vault = quote(settings.VAULT_OBSIDIAN_VAULT_NAME, safe="")
+    return f"obsidian://open?vault={vault}&file={quote(path[:-3] if path.lower().endswith('.md') else path, safe='')}"
+
+
+def _compat_search(args, client):
+    found = notes.search_notes(args.get("query"), limit=20)
+    return {
+        "results": [{"id": r["path"], "title": r["title"], "url": _obsidian_url(r["path"])} for r in found["results"]]
+    }
+
+
+def _compat_fetch(args, client):
+    note = notes.read_note(args.get("id"), max_chars=FETCH_MAX_CHARS)
+    return {
+        "id": note["path"],
+        "title": note["title"],
+        "text": note["content"],
+        "url": _obsidian_url(note["path"]),
+        "metadata": {
+            "folder": note["folder"],
+            "updated_at": note["updated_at"],
+            "content_hash": note["content_hash"],
+            "truncated": note["truncated"],
+        },
+    }
+
+
 _HANDLERS = {
     "search_notes": lambda a, c: notes.search_notes(a.get("query"), limit=a.get("limit"), folder=a.get("folder")),
     "read_note": lambda a, c: notes.read_note(
@@ -314,4 +367,6 @@ _HANDLERS = {
     "update_note": lambda a, c: writes.update_note(
         a.get("path"), a.get("content"), client=c, base_hash=a.get("base_hash"), base_updated_at=a.get("base_updated_at")
     ),
+    "search": _compat_search,
+    "fetch": _compat_fetch,
 }

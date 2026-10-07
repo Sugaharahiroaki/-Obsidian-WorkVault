@@ -16,7 +16,9 @@ Vault APIは **MCP**（Model Context Protocol）の接続口 `https://<ドメイ
 | Claude Code | ○ | — | — | MCP（APIキー または OAuth） |
 | Codex | ○ | — | — | MCP または curl（APIキー） |
 
-**iPhoneの普通のチャットから使うなら、現状はClaudeが確実です。**
+**壁打ちの中心はChatGPTです。** PCのブラウザ版ChatGPTの普通のチャットで使えます。iPhoneの普通のチャットから使いたい場合は、現状ではClaudeを使うことになります（同じサーバーにそのまま接続できます）。
+
+ChatGPTのDeep ResearchやCompany knowledgeでも使えるよう、決まった名前の `search` と `fetch` ツールも用意しています。
 
 ## 前提
 
@@ -62,6 +64,9 @@ Vault APIは **MCP**（Model Context Protocol）の接続口 `https://<ドメイ
 4. チャットでは、＋メニュー →「開発者モード」→「Obsidian WorkVault」を選んでから頼む
 
 プランによっては、読み取り系のツールしか使えない場合があります。
+
+- 設定に「開発者モード」が見当たらない場合は、そのプランでは自作のアプリを追加できません
+- 保存（create / append / update）が使えない場合でも、検索と閲覧は使えることがあります。読み取り系のツールには、AI側が読み取り専用と判断する目印（`readOnlyHint`）を付けています
 
 ## Claude Code
 

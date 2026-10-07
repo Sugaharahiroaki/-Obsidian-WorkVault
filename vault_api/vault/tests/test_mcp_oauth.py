@@ -269,7 +269,10 @@ class McpTests(OAuthFlowTestCase):
         tools = self.mcp(token, "tools/list").json()["result"]["tools"]
         self.assertEqual(
             [t["name"] for t in tools],
-            ["search_notes", "read_note", "list_notes", "get_recent_notes", "create_note", "append_note", "update_note"],
+            [
+                "search_notes", "read_note", "list_notes", "get_recent_notes",
+                "create_note", "append_note", "update_note", "search", "fetch",
+            ],
         )
         self.assertTrue(tools[0]["annotations"]["readOnlyHint"])
 
@@ -289,11 +292,30 @@ class McpTests(OAuthFlowTestCase):
         change = PendingChange.objects.get()
         self.assertEqual((change.path, change.client), ("04_AI-Chats/2026-10-07_料金相談.md", "oauth:ChatGPT"))
 
+    def test_chatgpt_compatibility_search_and_fetch(self):
+        _, tokens = self.connect(allow_write=False)
+        token = tokens["access_token"]
+        found = self.mcp(token, "tools/call", {"name": "search", "arguments": {"query": "料金案"}}).json()["result"]
+        self.assertFalse(found["isError"])
+        hit = found["structuredContent"]["results"][0]
+        self.assertEqual(hit["id"], "02_Ideas/料金案.md")
+        self.assertEqual(hit["title"], "料金案")
+        self.assertEqual(hit["url"], "obsidian://open?vault=WorkVault&file=02_Ideas%2F%E6%96%99%E9%87%91%E6%A1%88")
+        self.assertEqual(json.loads(found["content"][0]["text"]), found["structuredContent"])
+
+        doc = self.mcp(token, "tools/call", {"name": "fetch", "arguments": {"id": hit["id"]}}).json()["result"]
+        self.assertEqual(doc["structuredContent"]["text"], "TOMONIの料金案\n")
+        self.assertEqual(doc["structuredContent"]["id"], "02_Ideas/料金案.md")
+        self.assertFalse(doc["structuredContent"]["metadata"]["truncated"])
+        missing = self.mcp(token, "tools/call", {"name": "fetch", "arguments": {"id": "../x.md"}}).json()["result"]
+        self.assertTrue(missing["isError"])
+
     def test_read_only_grant_hides_and_blocks_writes(self):
         _, tokens = self.connect(allow_write=False)
         self.assertEqual(tokens["scope"], "vault:read")
         tools = self.mcp(tokens["access_token"], "tools/list").json()["result"]["tools"]
-        self.assertEqual(len(tools), 4)
+        self.assertTrue(all(t["annotations"]["readOnlyHint"] for t in tools))
+        self.assertEqual(len(tools), 6)
         result = self.mcp(
             tokens["access_token"], "tools/call",
             {"name": "create_note", "arguments": {"folder": "00_INBOX", "title": "x", "content": "x"}},
@@ -333,7 +355,7 @@ class McpTests(OAuthFlowTestCase):
         self.assertEqual(batch.json()["error"]["code"], -32600)
 
     def test_static_api_keys_work_for_cli_clients(self):
-        for key, count in [(READ_KEY, 4), (SYNC_KEY, 4), (WRITE_KEY, 7)]:
+        for key, count in [(READ_KEY, 6), (SYNC_KEY, 6), (WRITE_KEY, 9)]:
             with self.subTest(count=count):
                 tools = self.mcp(key, "tools/list").json()["result"]["tools"]
                 self.assertEqual(len(tools), count)

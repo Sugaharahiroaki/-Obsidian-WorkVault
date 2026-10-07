@@ -271,6 +271,10 @@ URLは `https://<host>/api/vault/mcp` です（末尾のスラッシュなし）
 | `create_note` | write | `folder`、`title`、`content` |
 | `append_note` | write | `path`、`content` |
 | `update_note` | write | `path`、`content`、`base_hash`、`base_updated_at` |
+| `search` | read | `query`。ChatGPTのDeep ResearchやCompany knowledgeとの互換用。`{"results": [{"id": パス, "title", "url"}]}` を返す |
+| `fetch` | read | `id`（`search` が返したパス）。`{"id", "title", "text", "url", "metadata"}` を返す（本文は最大10万文字） |
+
+`search` と `fetch` の `url` は `obsidian://open?vault=WorkVault&file=...` です。出典リンクをタップすると、Obsidianアプリでそのノートが開きます（Vault名は `VAULT_OBSIDIAN_VAULT_NAME` で変更できます）。
 
 - 書き込み権限がない接続では、`tools/list` に書き込み系のツールが出ません。呼んでもエラーになります
 - 読み取り系には `readOnlyHint: true`、`update_note` には `destructiveHint: true` を付けています（AI側が実行前に確認する目安）
