@@ -38,6 +38,9 @@ class Config:
     secret_scan_allow: tuple = ()
     extra_excludes: tuple = ()
     ca_bundle: str = ""
+    # Phase 3: apply notes created/edited by AI clients to the vault.
+    apply_remote_changes: bool = True
+    pull_interval_seconds: float = 30.0
 
     def endpoint(self, name):
         return f"{self.api_url.rstrip('/')}/{name}/"
@@ -109,4 +112,6 @@ def load_config(env_file=None, require_api=True, environ=None):
         secret_scan_allow=_globs(env.get("VAULT_SECRET_SCAN_ALLOW")),
         extra_excludes=_globs(env.get("VAULT_EXTRA_EXCLUDES")),
         ca_bundle=(env.get("VAULT_CA_BUNDLE") or "").strip(),
+        apply_remote_changes=_bool(env.get("VAULT_APPLY_REMOTE_CHANGES"), True),
+        pull_interval_seconds=_number(env, "VAULT_PULL_INTERVAL_SECONDS", 30.0),
     )

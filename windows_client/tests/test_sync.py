@@ -25,6 +25,19 @@ class FakeClient:
         self.pushes = []
         self.fail = False
         self.reject = {}
+        self.changes = []
+        self.acks = []
+        self.fail_ack = False
+
+    def fetch_changes(self):
+        if self.fail:
+            raise sync.ApiError("connection refused")
+        return [c for c in self.changes if c["id"] not in {a["id"] for batch in self.acks for a in batch}]
+
+    def ack_changes(self, results):
+        if self.fail_ack:
+            raise sync.ApiError("connection reset")
+        self.acks.append(results)
 
     def push(self, notes):
         if self.fail:
@@ -212,6 +225,66 @@ class SyncTests(VaultTestCase):
         self.assertIn("+ 02_Ideas/アイデア.md", report)
         self.assertNotIn("日本語ノート", report)
         self.assertFalse(self.config.state_file.exists())
+
+
+class PullChangesTests(VaultTestCase):
+    def change(self, change_id, op, path, content, base=""):
+        return {"id": change_id, "op": op, "path": path, "content": content, "base_hash": base}
+
+    def test_applies_acks_and_syncs_back(self):
+        self.client.changes = [self.change(1, "create", "04_AI-Chats/会話.md", "AIのまとめ")]
+        self.assertTrue(self.syncer().pull_changes())
+        self.assertEqual((self.root / "04_AI-Chats/会話.md").read_text(encoding="utf-8"), "AIのまとめ")
+        self.assertEqual(self.client.acks, [[{"id": 1, "status": "applied", "detail": ""}]])
+        self.assertEqual(self.client.pushed_paths(), ["04_AI-Chats/会話.md"])
+
+    def test_conflict_pushes_copy_and_restores_pc_version_on_server(self):
+        self.write("02_Ideas/a.md", "PC版")
+        self.syncer().full_scan()
+        self.client.pushes.clear()
+        self.client.changes = [self.change(1, "update", "02_Ideas/a.md", "AI版", base=hashlib.sha256(b"old").hexdigest())]
+        self.syncer().pull_changes()
+        ack = self.client.acks[0][0]
+        self.assertEqual(ack["status"], "conflict")
+        self.assertEqual(sorted(self.client.pushed_paths()), sorted([ack["conflict_path"], "02_Ideas/a.md"]))
+        self.assertEqual((self.root / "02_Ideas/a.md").read_text(encoding="utf-8"), "PC版")
+
+    def test_lost_ack_does_not_apply_twice(self):
+        self.write("02_Ideas/a.md", "a\n")
+        self.client.changes = [self.change(1, "append", "02_Ideas/a.md", "追記")]
+        self.client.fail_ack = True
+        self.assertFalse(self.syncer().pull_changes())
+        self.client.fail_ack = False
+        self.assertTrue(self.syncer().pull_changes())  # fresh Syncer: applied results come from disk
+        self.assertEqual((self.root / "02_Ideas/a.md").read_text(encoding="utf-8"), "a\n追記\n")
+        self.assertEqual(self.client.acks[-1][0]["status"], "applied")
+
+    def test_transient_error_blocks_later_changes_for_same_note(self):
+        self.write("02_Ideas/a.md", "a\n")
+        self.client.changes = [
+            self.change(1, "append", "02_Ideas/a.md", "1"),
+            self.change(2, "append", "02_Ideas/a.md", "2"),
+            self.change(3, "create", "02_Ideas/b.md", "b"),
+        ]
+        with mock.patch.object(sync.applier, "_replace", side_effect=PermissionError("locked")):
+            self.assertFalse(self.syncer().pull_changes())
+        self.assertEqual([a["id"] for a in self.client.acks[0]], [3])
+        self.assertTrue(self.syncer().pull_changes())
+        self.assertEqual((self.root / "02_Ideas/a.md").read_text(encoding="utf-8"), "a\n1\n2\n")
+
+    def test_remote_changes_can_be_disabled(self):
+        self.client.changes = [self.change(1, "create", "02_Ideas/x.md", "x")]
+        self.assertTrue(self.syncer(replace(self.config, apply_remote_changes=False)).pull_changes())
+        self.assertFalse((self.root / "02_Ideas/x.md").exists())
+        self.assertEqual(self.client.acks, [])
+
+    def test_refused_change_is_acked_as_failed(self):
+        self.client.changes = [self.change(1, "create", "99_Archive/x.md", "x")]
+        with self.assertLogs("vault_sync", "WARNING") as logs:
+            self.syncer().pull_changes()
+        self.assertEqual(self.client.acks[0][0]["status"], "failed")
+        self.assertIn("not_writable", logs.output[0])
+        self.assertFalse((self.root / "99_Archive").exists())
 
 
 class FakeResponse:

@@ -107,9 +107,32 @@ SECURE_REFERRER_POLICY = "no-referrer"
 
 # --- Vault API -------------------------------------------------------------
 # API keys as "client-name:key" pairs, comma separated. Keys must be at least
-# 32 characters. Sync keys may push notes and read; read keys may only read.
+# 32 characters. Sync keys (Windows client) push notes and pull AI writes;
+# write keys (e.g. ChatGPT) read and create/append/update; read keys only read.
 VAULT_SYNC_KEYS = os.environ.get("VAULT_SYNC_KEYS", "")
+VAULT_WRITE_KEYS = os.environ.get("VAULT_WRITE_KEYS", "")
 VAULT_READ_KEYS = os.environ.get("VAULT_READ_KEYS", "")
+
+# Public base URL, e.g. https://vault.example.com. Used as the OAuth issuer and
+# MCP resource identifier, and in the OpenAPI schema. Empty = derive from the
+# request (fine for local testing; set it in production).
+VAULT_PUBLIC_URL = os.environ.get("VAULT_PUBLIC_URL", "").rstrip("/")
+
+# --- OAuth for MCP clients (ChatGPT / Claude apps) ------------------------
+# Hash of the owner's password, entered on the consent screen when ChatGPT or
+# Claude connects. Create it with: python manage.py vault_owner_password
+# Empty = OAuth sign-in disabled (static API keys still work).
+VAULT_OWNER_PASSWORD_HASH = os.environ.get("VAULT_OWNER_PASSWORD_HASH", "")
+# Hosts allowed as OAuth redirect targets (plus loopback for Claude Code).
+VAULT_OAUTH_REDIRECT_HOSTS = env_list("VAULT_OAUTH_REDIRECT_HOSTS", "chatgpt.com,claude.ai")
+VAULT_OAUTH_ALLOW_LOOPBACK = env_bool("VAULT_OAUTH_ALLOW_LOOPBACK", True)
+VAULT_OAUTH_ACCESS_TOKEN_SECONDS = env_int("VAULT_OAUTH_ACCESS_TOKEN_SECONDS", 3600)
+VAULT_OAUTH_REFRESH_TOKEN_DAYS = env_int("VAULT_OAUTH_REFRESH_TOKEN_DAYS", 60)
+# Failed password attempts allowed per 15 minutes (all clients together).
+VAULT_OAUTH_MAX_FAILED_LOGINS = env_int("VAULT_OAUTH_MAX_FAILED_LOGINS", 10)
+
+CSRF_COOKIE_SECURE = VAULT_REQUIRE_HTTPS
+CSRF_COOKIE_HTTPONLY = True
 
 # Number of reverse proxies in front of Django whose X-Forwarded-For entries
 # are trusted for the client IP in access logs. 0 = use REMOTE_ADDR.

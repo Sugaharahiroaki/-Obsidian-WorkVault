@@ -17,3 +17,5 @@ VAULT_TRUSTED_PROXY_COUNT = 0
 VAULT_SYNC_KEYS = "test-pc:" + "s" * 40
 VAULT_READ_KEYS = "test-reader:" + "r" * 40
 LOGGING["loggers"]["django"]["level"] = "ERROR"  # noqa: F405 - silence expected 4xx warnings
+# Fast hashing for the owner-password tests (production uses Django's PBKDF2 default).
+PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

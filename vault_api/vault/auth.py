@@ -2,8 +2,9 @@
 
 Keys live in the environment (``.env``), never in code or the database::
 
-    VAULT_SYNC_KEYS=windows-pc:<key>            # push notes + read
-    VAULT_READ_KEYS=chatgpt:<key>,codex:<key>   # read only
+    VAULT_SYNC_KEYS=windows-pc:<key>            # push notes, pull AI writes, read
+    VAULT_READ_KEYS=codex:<key>                 # read only
+    VAULT_WRITE_KEYS=chatgpt:<key>              # read + create/append/update (Phase 3)
 
 Keys are compared in constant time and are never logged or echoed in errors.
 """
@@ -17,6 +18,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 SCOPE_READ = "read"
 SCOPE_SYNC = "sync"
+SCOPE_WRITE = "write"
 MIN_KEY_LENGTH = 32
 
 _CLIENT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -59,8 +61,10 @@ def _parse(setting_name, raw, scopes):
 
 
 def load_api_keys():
-    return _parse("VAULT_SYNC_KEYS", settings.VAULT_SYNC_KEYS, {SCOPE_SYNC, SCOPE_READ}) + _parse(
-        "VAULT_READ_KEYS", settings.VAULT_READ_KEYS, {SCOPE_READ}
+    return (
+        _parse("VAULT_SYNC_KEYS", settings.VAULT_SYNC_KEYS, {SCOPE_SYNC, SCOPE_READ})
+        + _parse("VAULT_WRITE_KEYS", getattr(settings, "VAULT_WRITE_KEYS", ""), {SCOPE_WRITE, SCOPE_READ})
+        + _parse("VAULT_READ_KEYS", settings.VAULT_READ_KEYS, {SCOPE_READ})
     )
 
 

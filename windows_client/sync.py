@@ -1,13 +1,17 @@
-"""WorkVault -> Vault API sync client (Phase 1: one-way, PC -> server).
+"""WorkVault <-> Vault API sync client.
+
+PC -> server: changed notes are pushed (the PC is the source of truth).
+Server -> PC (Phase 3): notes created/edited by AI clients are pulled and
+applied by applier.py, never overwriting newer edits made on the PC.
 
     python sync.py              full sync, then watch for changes (Ctrl+C stops)
-    python sync.py --once       one full sync, then exit
+    python sync.py --once       one full sync + apply pending AI writes, then exit
     python sync.py --dry-run    list what would be sent or skipped; sends nothing
     python sync.py --check      verify VAULT_API_URL and VAULT_API_KEY
 
 Only metadata (paths, counts, reasons) is logged. Note bodies and the API key
 never are. Deleting or renaming a note does not remove it from the server:
-Phase 1 has no delete API.
+there is no delete API.
 """
 import argparse
 import hashlib
@@ -22,6 +26,7 @@ from datetime import datetime, timezone
 
 import requests
 
+import applier
 import filters
 from config import ConfigError, load_config
 from watcher import RESCAN, Debouncer, start_watching
@@ -214,6 +219,43 @@ class SyncState:
         self._dirty = False
 
 
+class AppliedChanges:
+    """Results of AI writes already applied to the vault, by change id.
+
+    If an acknowledgement is lost, the server offers the change again; the
+    stored result is re-sent instead of applying it twice (an append would
+    otherwise be duplicated). Saved right after every apply.
+    """
+
+    KEEP = 1000
+
+    def __init__(self, path, api_url):
+        self.path = path
+        self.api_url = api_url
+        self.results = {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            logger.warning("Applied-changes file %s is unreadable; starting fresh", path)
+            return
+        if data.get("api_url") == api_url:
+            self.results = {int(k): v for k, v in data.get("results", {}).items()}
+
+    def get(self, change_id):
+        return self.results.get(change_id)
+
+    def record(self, result):
+        self.results[result["id"]] = result
+        for old in sorted(self.results)[: max(0, len(self.results) - self.KEEP)]:
+            del self.results[old]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps({"api_url": self.api_url, "results": self.results}, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+
 # --------------------------------------------------------------------------
 # HTTP
 
@@ -247,6 +289,18 @@ class VaultApiClient:
 
     def check(self):
         return self._request("GET", "recent", params={"limit": 1})
+
+    def fetch_changes(self):
+        changes = self._request("GET", "changes").get("changes")
+        if not isinstance(changes, list):
+            raise ApiError("unexpected response from server")
+        return changes
+
+    def ack_changes(self, results):
+        body = json.dumps({"results": results}, ensure_ascii=False).encode("utf-8")
+        return self._request(
+            "POST", "changes/ack", data=body, headers={"Content-Type": "application/json; charset=utf-8"}
+        )
 
     def _request(self, method, name, **kwargs):
         url = self._config.endpoint(name)
@@ -308,10 +362,13 @@ def make_batches(notes, max_notes, max_bytes):
 
 
 class Syncer:
-    def __init__(self, config, client, state):
+    def __init__(self, config, client, state, applied=None):
         self.config = config
         self.client = client
         self.state = state
+        self.applied = applied or AppliedChanges(
+            config.state_file.with_name("applied_changes.json"), config.api_url
+        )
 
     def evaluate(self, rel, force=False):
         reason = exclusion_reason(self.config, rel)
@@ -402,6 +459,64 @@ class Syncer:
             )
         return "rejected"
 
+    def pull_changes(self):
+        """Apply AI writes queued on the server. Returns False if something should be retried soon."""
+        if not self.config.apply_remote_changes:
+            return True
+        try:
+            pending = self.client.fetch_changes()
+        except ApiError as exc:
+            logger.error("Could not fetch AI changes: %s", exc)
+            return False
+
+        results, healthy = [], True
+        to_sync, to_force, blocked = set(), set(), set()
+        for change in pending:
+            rel = change.get("path")
+            if rel in blocked:  # keep per-note order after a failure
+                continue
+            result = self.applied.get(change.get("id"))
+            if result is None:
+                try:
+                    result = applier.apply_change(self.config.vault_root, change)
+                except OSError as exc:
+                    logger.warning("Could not apply AI %s to %s (%s); will retry", change.get("op"), rel, type(exc).__name__)
+                    blocked.add(rel)
+                    healthy = False
+                    continue
+                self.applied.record(result)
+                self._log_change(change, result)
+            results.append(result)
+            if result["status"] == applier.APPLIED:
+                to_sync.add(rel)
+            elif result["status"] == applier.CONFLICT:
+                to_sync.add(result["conflict_path"])
+                to_force.add(rel)  # put the PC's version back on the server
+
+        if results:
+            try:
+                self.client.ack_changes(results)
+            except ApiError as exc:
+                logger.error("Could not acknowledge AI changes: %s", exc)
+                healthy = False
+        if to_sync:
+            healthy = self.sync_paths(to_sync) and healthy
+        if to_force:
+            healthy = self.sync_paths(to_force, force=True) and healthy
+        return healthy
+
+    @staticmethod
+    def _log_change(change, result):
+        op, rel = change.get("op"), change.get("path")
+        if result["status"] == applier.APPLIED:
+            logger.info("Applied AI %s: %s", op, rel)
+        elif result["status"] == applier.CONFLICT:
+            logger.warning(
+                "Conflict on %s (%s): AI text saved as %s", rel, result.get("detail"), result.get("conflict_path")
+            )
+        else:
+            logger.warning("Refused AI %s on %s (%s)", op, rel, result.get("detail"))
+
     def _record_synced(self, note):
         self.state.record(note.rel_path, content_hash=note.content_hash, mtime_ns=note.mtime_ns, size=note.size)
 
@@ -429,6 +544,7 @@ def run_forever(config, syncer, force=False):
     try:
         healthy = syncer.full_scan(force=force)
         next_scan = time.monotonic() + (config.rescan_interval_seconds if healthy else config.retry_interval_seconds)
+        next_pull = time.monotonic()
         while True:
             time.sleep(0.5)
             ready = debouncer.pop_ready()
@@ -439,6 +555,10 @@ def run_forever(config, syncer, force=False):
                     next_scan = time.monotonic() + interval
                 elif ready and not syncer.sync_paths(ready):
                     next_scan = min(next_scan, time.monotonic() + config.retry_interval_seconds)
+                if config.apply_remote_changes and time.monotonic() >= next_pull:
+                    pulled = syncer.pull_changes()
+                    interval = config.pull_interval_seconds if pulled else config.retry_interval_seconds
+                    next_pull = time.monotonic() + interval
             except Exception:  # keep a background service alive
                 logger.exception("Unexpected error; continuing")
     except KeyboardInterrupt:
@@ -562,7 +682,9 @@ def main(argv=None):
         with SingleInstance(config.state_file.with_name(config.state_file.name + ".lock")):
             syncer = Syncer(config, client, SyncState(config))
             if args.once:
-                return 0 if syncer.full_scan(force=args.force) else 1
+                scanned = syncer.full_scan(force=args.force)
+                pulled = syncer.pull_changes()
+                return 0 if scanned and pulled else 1
             run_forever(config, syncer, force=args.force)
     except ConfigError as exc:
         logger.error("%s", exc)

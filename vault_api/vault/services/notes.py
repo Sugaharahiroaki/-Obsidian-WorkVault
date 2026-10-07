@@ -19,6 +19,7 @@ from ..security import normalize_folder_path, normalize_note_path
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 MAX_QUERY_CHARS = 200
+MAX_READ_CHARS = 200_000
 
 
 class NoteNotFound(LookupError):
@@ -39,6 +40,18 @@ def clamp_limit(value, default=DEFAULT_LIMIT):
     return max(1, min(MAX_LIMIT, number))
 
 
+def _int_param(value, name, *, minimum, maximum, default):
+    if value in (None, ""):
+        return default
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise InvalidQuery(f"{name} must be an integer") from None
+    if not minimum <= number <= maximum:
+        raise InvalidQuery(f"{name} must be between {minimum} and {maximum}")
+    return number
+
+
 def _iso(dt):
     return timezone.localtime(dt).isoformat() if dt else None
 
@@ -57,6 +70,8 @@ def _in_folder(folder):
 
 
 def search_notes(query, limit=DEFAULT_LIMIT, folder=None):
+    if query is not None and not isinstance(query, str):
+        raise InvalidQuery("query must be a string")
     query = (query or "").strip()
     if not query:
         raise InvalidQuery("query is empty")
@@ -74,17 +89,30 @@ def search_notes(query, limit=DEFAULT_LIMIT, folder=None):
     }
 
 
-def read_note(path):
+def read_note(path, offset=None, max_chars=None):
+    """Whole note by default; ``offset``/``max_chars`` page through long notes.
+
+    ``content_hash`` always describes the whole note (use it as base_hash for
+    update_note), even when only a slice of ``content`` is returned.
+    """
     path = normalize_note_path(path)
+    offset = _int_param(offset, "offset", minimum=0, maximum=10**9, default=0)
+    max_chars = _int_param(max_chars, "max_chars", minimum=1, maximum=MAX_READ_CHARS, default=None)
     note = VaultNote.objects.filter(path=path).first()
     if note is None:
         raise NoteNotFound(path)
+    total = len(note.content)
+    end = total if max_chars is None else min(total, offset + max_chars)
     return {
         **_summary(note),
-        "content": note.content,
+        "content": note.content[offset:end],
         "content_hash": note.content_hash,
         "created_at": _iso(note.created_at),
         "last_synced_at": _iso(note.last_synced_at),
+        "total_chars": total,
+        "offset": min(offset, total),
+        "truncated": end < total,
+        "next_offset": end if end < total else None,
     }
 
 

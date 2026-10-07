@@ -128,6 +128,53 @@ def _check_segment(segment):
             raise InvalidPath("path matches an excluded pattern")
 
 
+# Phase 3: the only top-level folders AI clients may write into. 99_Archive and
+# 08_Templates stay read-only, and files directly under the vault root
+# (00_INBOX.md, AGENTS.md, ...) are never writable.
+WRITABLE_FOLDERS = (
+    "00_INBOX",
+    "01_Projects",
+    "02_Ideas",
+    "03_Knowledge",
+    "04_AI-Chats",
+    "05_Prompts",
+    "06_Decisions",
+    "07_DevLogs",
+)
+
+# Characters that Windows forbids in file names or that break Obsidian links.
+_TITLE_UNSAFE = re.compile(r'[\\/<>:"|?*#^\[\]\x00-\x1f\x7f]')
+MAX_TITLE_CHARS = 120
+
+
+def ensure_writable(path):
+    """``path`` must already be normalized. Raises InvalidPath outside WRITABLE_FOLDERS."""
+    top, sep, _ = path.partition("/")
+    if not sep or top not in WRITABLE_FOLDERS:
+        raise InvalidPath("writing is only allowed inside: " + ", ".join(WRITABLE_FOLDERS))
+    return path
+
+
+def note_path_from_title(folder, title):
+    """``("04_AI-Chats", "2026-10-07 会議: 要約?")`` -> ``"04_AI-Chats/2026-10-07 会議_ 要約_.md"``."""
+    if not isinstance(title, str):
+        raise InvalidPath("title must be a string")
+    name = " ".join(_TITLE_UNSAFE.sub("_", title).split()).strip(". ")[:MAX_TITLE_CHARS].strip(". ")
+    if not name:
+        raise InvalidPath("title is empty")
+    if not name.lower().endswith(NOTE_SUFFIX):
+        name += NOTE_SUFFIX
+    folder = normalize_folder_path(folder)
+    return normalize_note_path(f"{folder}/{name}" if folder else name)
+
+
+def conflict_path_for(path, when, attempt=1):
+    """``"a/b.md"`` -> ``"a/b (conflict 2026-10-07 132000).md"`` (``" 2"`` etc. appended on retries)."""
+    stem = path[: -len(NOTE_SUFFIX)]
+    suffix = "" if attempt == 1 else f" {attempt}"
+    return f"{stem} (conflict {when:%Y-%m-%d %H%M%S}{suffix}){NOTE_SUFFIX}"
+
+
 def folder_of(path):
     """``"01_Projects/A/project.md"`` -> ``"01_Projects/A"``; root notes -> ``""``."""
     return path.rsplit("/", 1)[0] if "/" in path else ""
